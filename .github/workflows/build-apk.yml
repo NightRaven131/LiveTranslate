@@ -4,24 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Tag Release sumber, contoh: 1.0.0'
+        description: "Tag Release sumber, contoh: 1.0.0"
         required: true
-        default: '1.0.0'
+        default: "1.0.0"
         type: string
       source_zip:
-        description: 'Nama asset ZIP di Release'
+        description: "Nama asset ZIP di Release"
         required: true
-        default: 'LiveTranslate_GitHub_Build.zip'
+        default: "LiveTranslate_GitHub_Build.zip"
         type: string
 
 permissions:
   contents: write
 
 env:
-  JAVA_VERSION: '17'
-  GRADLE_VERSION: '8.9'
-  ANDROID_COMPILE_SDK: '35'
-  ANDROID_BUILD_TOOLS: '35.0.0'
+  JAVA_VERSION: "17"
+  GRADLE_VERSION: "8.9"
+  ANDROID_COMPILE_SDK: "35"
+  ANDROID_BUILD_TOOLS: "35.0.0"
 
 jobs:
   build-apk:
@@ -41,8 +41,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platform-tools" \
+
+          sdkmanager \
+            "platform-tools" \
             "platforms;android-${ANDROID_COMPILE_SDK}" \
             "build-tools;${ANDROID_BUILD_TOOLS}"
 
@@ -60,7 +63,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Menerima 1.0.0, v1.0.0, atau copy-paste "release_tag: v1.0.0".
+          # Menerima:
+          # 1.0.0
+          # v1.0.0
+          # release_tag: v1.0.0
+
           TAG="${RAW_TAG#release_tag:}"
           TAG="${TAG#tag:}"
           TAG="$(printf '%s' "$TAG" | xargs)"
@@ -87,15 +94,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "--- Release ---"
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          echo "=== RELEASE ==="
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY"
 
-          echo "--- Assets ---"
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name'
+          echo "=== ASSETS ==="
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name'
 
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name' | grep -Fx "$SOURCE_ZIP"
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' \
+            | grep -Fx "$SOURCE_ZIP"
 
       - name: Download source ZIP from Release
         env:
@@ -107,6 +120,8 @@ jobs:
           set -euo pipefail
 
           ROOT="$RUNNER_TEMP/livetranslate"
+
+          rm -rf "$ROOT"
           mkdir -p "$ROOT/extracted"
 
           gh release download "$RELEASE_TAG" \
@@ -116,10 +131,17 @@ jobs:
             --clobber
 
           test -f "$ROOT/$SOURCE_ZIP"
-          unzip -q "$ROOT/$SOURCE_ZIP" -d "$ROOT/extracted"
 
-          echo "--- Extracted files ---"
-          find "$ROOT/extracted" -maxdepth 4 -type f | sort | sed -n '1,120p'
+          unzip -q "$ROOT/$SOURCE_ZIP" \
+            -d "$ROOT/extracted"
+
+          echo "=== EXTRACTED FILES ==="
+
+          find "$ROOT/extracted" \
+            -maxdepth 5 \
+            -type f \
+            | sort \
+            | sed -n '1,160p'
 
       - name: Locate Android project
         id: project
@@ -128,50 +150,224 @@ jobs:
           set -euo pipefail
 
           ROOT="$RUNNER_TEMP/livetranslate/extracted"
-          PROJECT_FILE="$(find "$ROOT" -type f -name settings.gradle.kts -print -quit)"
 
-          test -n "$PROJECT_FILE"
+          PROJECT_FILE="$(
+            find "$ROOT" \
+              -type f \
+              -name "settings.gradle.kts" \
+              -print \
+              -quit
+          )"
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: settings.gradle.kts tidak ditemukan."
+            exit 1
+          fi
 
           PROJECT_DIR="$(dirname "$PROJECT_FILE")"
-          test -f "$PROJECT_DIR/app/build.gradle.kts"
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: app/build.gradle.kts tidak ditemukan."
+            exit 1
+          fi
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Android project: $PROJECT_DIR"
+
+          echo "Android project:"
+          echo "$PROJECT_DIR"
 
       - name: Build Release APK
+        id: build
         working-directory: ${{ steps.project.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
-          gradle --version
-          gradle assembleRelease --no-daemon --stacktrace --no-build-cache
-          test -f app/build/outputs/apk/release/app-release.apk
 
-      - name: Rename APK
+          gradle --version
+
+          echo "=== BUILD RELEASE ==="
+
+          gradle assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            --no-build-cache
+
+          OUTPUT_DIR="app/build/outputs/apk/release"
+
+          if [ ! -d "$OUTPUT_DIR" ]; then
+            echo "ERROR: Folder output release tidak ditemukan."
+            exit 1
+          fi
+
+          echo "=== RELEASE OUTPUT ==="
+
+          find "$OUTPUT_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -print \
+            | sort
+
+          # Cari APK apa pun yang dibuat Gradle.
+          APK="$(
+            find "$OUTPUT_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name "*.apk" \
+              -print \
+              | head -n 1
+          )"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: Tidak ada APK hasil build."
+            exit 1
+          fi
+
+          echo "Found APK:"
+          echo "$APK"
+
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare APK signing tools
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_TOOLS="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
+
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+
+          if [ ! -x "$ZIPALIGN" ]; then
+            echo "ERROR: zipalign tidak ditemukan:"
+            echo "$ZIPALIGN"
+            exit 1
+          fi
+
+          if [ ! -x "$APKSIGNER" ]; then
+            echo "ERROR: apksigner tidak ditemukan:"
+            echo "$APKSIGNER"
+            exit 1
+          fi
+
+          KEYSTORE="$RUNNER_TEMP/livetranslate-release.keystore"
+
+          STORE_PASSWORD="LiveTranslateTempStore2026"
+          KEY_PASSWORD="LiveTranslateTempKey2026"
+          KEY_ALIAS="livetranslate"
+
+          echo "=== GENERATE TEMPORARY SIGNING KEY ==="
+
+          keytool -genkeypair \
+            -v \
+            -keystore "$KEYSTORE" \
+            -storepass "$STORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            -alias "$KEY_ALIAS" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=LiveTranslate, OU=NightRaven, O=LiveTranslate, L=Jakarta, ST=DKI Jakarta, C=ID"
+
+          test -f "$KEYSTORE"
+
+          echo "zipalign=$ZIPALIGN" >> "$GITHUB_OUTPUT"
+          echo "apksigner=$APKSIGNER" >> "$GITHUB_OUTPUT"
+          echo "keystore=$KEYSTORE" >> "$GITHUB_OUTPUT"
+          echo "store_password=$STORE_PASSWORD" >> "$GITHUB_OUTPUT"
+          echo "key_password=$KEY_PASSWORD" >> "$GITHUB_OUTPUT"
+          echo "key_alias=$KEY_ALIAS" >> "$GITHUB_OUTPUT"
+
+      - name: Align and sign APK
+        id: signed_apk
+        env:
+          APK_INPUT: ${{ steps.build.outputs.apk }}
+          ZIPALIGN: ${{ steps.signing.outputs.zipalign }}
+          APKSIGNER: ${{ steps.signing.outputs.apksigner }}
+          KEYSTORE: ${{ steps.signing.outputs.keystore }}
+          STORE_PASSWORD: ${{ steps.signing.outputs.store_password }}
+          KEY_PASSWORD: ${{ steps.signing.outputs.key_password }}
+          KEY_ALIAS: ${{ steps.signing.outputs.key_alias }}
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ALIGNED_APK="$RUNNER_TEMP/LiveTranslate-aligned.apk"
+          SIGNED_APK="$RUNNER_TEMP/LiveTranslate-signed.apk"
+
+          echo "=== ZIPALIGN ==="
+
+          "$ZIPALIGN" \
+            -f \
+            -p \
+            4 \
+            "$APK_INPUT" \
+            "$ALIGNED_APK"
+
+          test -f "$ALIGNED_APK"
+
+          echo "=== APKSIGNER ==="
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$STORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out "$SIGNED_APK" \
+            "$ALIGNED_APK"
+
+          test -f "$SIGNED_APK"
+
+          echo "=== VERIFY SIGNATURE ==="
+
+          "$APKSIGNER" verify \
+            --verbose \
+            "$SIGNED_APK"
+
+          echo "signed_apk=$SIGNED_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Rename final APK
+        id: final
         env:
           RELEASE_TAG: ${{ steps.inputs.outputs.release_tag }}
-        working-directory: ${{ steps.project.outputs.project_dir }}
+          SIGNED_APK: ${{ steps.signed_apk.outputs.signed_apk }}
         shell: bash
         run: |
           set -euo pipefail
-          cp app/build/outputs/apk/release/app-release.apk \
-            "$RUNNER_TEMP/LiveTranslate-${RELEASE_TAG}.apk"
+
+          FINAL_APK="$RUNNER_TEMP/LiveTranslate-${RELEASE_TAG}.apk"
+
+          cp "$SIGNED_APK" "$FINAL_APK"
+
+          test -f "$FINAL_APK"
+
+          echo "final_apk=$FINAL_APK" >> "$GITHUB_OUTPUT"
+
+          echo "Final APK:"
+          ls -lh "$FINAL_APK"
 
       - name: Upload APK to the same Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.inputs.outputs.release_tag }}
+          FINAL_APK: ${{ steps.final.outputs.final_apk }}
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "=== UPLOAD APK TO RELEASE ==="
+
           gh release upload "$RELEASE_TAG" \
-            "$RUNNER_TEMP/LiveTranslate-${RELEASE_TAG}.apk" \
+            "$FINAL_APK" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-      - name: Upload APK as workflow artifact too
+          echo "APK uploaded successfully."
+
+      - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: LiveTranslate-APK-${{ steps.inputs.outputs.release_tag }}
-          path: ${{ runner.temp }}/LiveTranslate-*.apk
+          path: ${{ steps.final.outputs.final_apk }}
           if-no-files-found: error
