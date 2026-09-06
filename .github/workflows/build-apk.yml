@@ -63,11 +63,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Menerima:
-          # 1.0.0
-          # v1.0.0
-          # release_tag: v1.0.0
-
           TAG="${RAW_TAG#release_tag:}"
           TAG="${TAG#tag:}"
           TAG="$(printf '%s' "$TAG" | xargs)"
@@ -94,11 +89,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== RELEASE ==="
           gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY"
 
-          echo "=== ASSETS ==="
           gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --json assets \
@@ -134,8 +127,6 @@ jobs:
 
           unzip -q "$ROOT/$SOURCE_ZIP" \
             -d "$ROOT/extracted"
-
-          echo "=== EXTRACTED FILES ==="
 
           find "$ROOT/extracted" \
             -maxdepth 5 \
@@ -173,7 +164,6 @@ jobs:
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          echo "Android project:"
           echo "$PROJECT_DIR"
 
       - name: Build Release APK
@@ -184,8 +174,6 @@ jobs:
           set -euo pipefail
 
           gradle --version
-
-          echo "=== BUILD RELEASE ==="
 
           gradle assembleRelease \
             --no-daemon \
@@ -199,15 +187,12 @@ jobs:
             exit 1
           fi
 
-          echo "=== RELEASE OUTPUT ==="
-
           find "$OUTPUT_DIR" \
             -maxdepth 1 \
             -type f \
             -print \
             | sort
 
-          # Cari APK apa pun yang dibuat Gradle.
           APK="$(
             find "$OUTPUT_DIR" \
               -maxdepth 1 \
@@ -252,15 +237,14 @@ jobs:
 
           KEYSTORE="$RUNNER_TEMP/livetranslate-release.keystore"
 
-          STORE_PASSWORD="LiveTranslateTempStore2026"
-          KEY_PASSWORD="LiveTranslateTempKey2026"
+          STORE_PASSWORD="LiveTranslateTempPassword2026"
+          KEY_PASSWORD="$STORE_PASSWORD"
           KEY_ALIAS="livetranslate"
-
-          echo "=== GENERATE TEMPORARY SIGNING KEY ==="
 
           keytool -genkeypair \
             -v \
             -keystore "$KEYSTORE" \
+            -storetype PKCS12 \
             -storepass "$STORE_PASSWORD" \
             -keypass "$KEY_PASSWORD" \
             -alias "$KEY_ALIAS" \
@@ -288,15 +272,12 @@ jobs:
           STORE_PASSWORD: ${{ steps.signing.outputs.store_password }}
           KEY_PASSWORD: ${{ steps.signing.outputs.key_password }}
           KEY_ALIAS: ${{ steps.signing.outputs.key_alias }}
-        working-directory: ${{ steps.project.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
 
           ALIGNED_APK="$RUNNER_TEMP/LiveTranslate-aligned.apk"
           SIGNED_APK="$RUNNER_TEMP/LiveTranslate-signed.apk"
-
-          echo "=== ZIPALIGN ==="
 
           "$ZIPALIGN" \
             -f \
@@ -307,10 +288,9 @@ jobs:
 
           test -f "$ALIGNED_APK"
 
-          echo "=== APKSIGNER ==="
-
           "$APKSIGNER" sign \
             --ks "$KEYSTORE" \
+            --ks-type PKCS12 \
             --ks-key-alias "$KEY_ALIAS" \
             --ks-pass "pass:$STORE_PASSWORD" \
             --key-pass "pass:$KEY_PASSWORD" \
@@ -318,8 +298,6 @@ jobs:
             "$ALIGNED_APK"
 
           test -f "$SIGNED_APK"
-
-          echo "=== VERIFY SIGNATURE ==="
 
           "$APKSIGNER" verify \
             --verbose \
@@ -344,7 +322,6 @@ jobs:
 
           echo "final_apk=$FINAL_APK" >> "$GITHUB_OUTPUT"
 
-          echo "Final APK:"
           ls -lh "$FINAL_APK"
 
       - name: Upload APK to the same Release
@@ -356,14 +333,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== UPLOAD APK TO RELEASE ==="
-
           gh release upload "$RELEASE_TAG" \
             "$FINAL_APK" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-          echo "APK uploaded successfully."
+          echo "APK berhasil di-upload ke Release $RELEASE_TAG."
 
       - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
@@ -371,3 +346,17 @@ jobs:
           name: LiveTranslate-APK-${{ steps.inputs.outputs.release_tag }}
           path: ${{ steps.final.outputs.final_apk }}
           if-no-files-found: error
+
+      - name: Final summary
+        env:
+          RELEASE_TAG: ${{ steps.inputs.outputs.release_tag }}
+          FINAL_APK: ${{ steps.final.outputs.final_apk }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Build complete."
+          echo "Release: $RELEASE_TAG"
+          echo "APK: $FINAL_APK"
+          echo "Size:"
+          ls -lh "$FINAL_APK"
