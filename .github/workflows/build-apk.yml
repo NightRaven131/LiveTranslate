@@ -208,6 +208,12 @@ jobs:
             exit 1
           fi
 
+          # FIX: ubah ke absolute path. Step signing sesudah ini TIDAK
+          # pakai working-directory yang sama, jadi kalau path masih
+          # relatif ("app/build/outputs/..."), zipalign di step berikutnya
+          # akan mencarinya di folder yang salah dan gagal exit code 1.
+          APK="$(realpath "$APK")"
+
           echo "Found APK:"
           echo "$APK"
 
@@ -219,7 +225,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          BUILD_TOOLS="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
+          # FIX: fallback ke ANDROID_HOME kalau ANDROID_SDK_ROOT kosong,
+          # supaya path build-tools tidak pernah salah jadi "/build-tools/...".
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "Menggunakan SDK root: $SDK_ROOT"
+
+          BUILD_TOOLS="$SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
 
           ZIPALIGN="$BUILD_TOOLS/zipalign"
           APKSIGNER="$BUILD_TOOLS/apksigner"
@@ -361,3 +372,4 @@ jobs:
           echo "APK: $FINAL_APK"
           echo "Size:"
           ls -lh "$FINAL_APK"
+          
