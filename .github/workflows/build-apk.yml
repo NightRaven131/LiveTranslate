@@ -164,6 +164,7 @@ jobs:
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
+          echo "Android project:"
           echo "$PROJECT_DIR"
 
       - name: Build Release APK
