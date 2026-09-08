@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag Release sumber, contoh: 1.0.0"
-        required: true
-        default: "1.0.0"
+        description: "Tag Release sumber. Kosongkan untuk pakai release TERBARU."
+        required: false
+        default: ""
         type: string
       source_zip:
-        description: "Nama asset ZIP di Release"
-        required: true
-        default: "LiveTranslate_GitHub_Build.zip"
+        description: "Nama asset ZIP di Release. Kosongkan untuk auto-detect .zip."
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -54,10 +54,11 @@ jobs:
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
-      - name: Normalize workflow inputs
+      - name: Resolve release tag and ZIP asset
         id: inputs
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           RAW_TAG: ${{ inputs.release_tag }}
           RAW_ZIP: ${{ inputs.source_zip }}
         run: |
@@ -71,37 +72,71 @@ jobs:
           ZIP="${RAW_ZIP#source_zip:}"
           ZIP="$(printf '%s' "$ZIP" | xargs)"
 
+          # Kosong = pakai release TERBARU di repo ini ("gh release view"
+          # tanpa argumen tag otomatis ambil yang terbaru).
+          if [ -z "$TAG" ]; then
+            echo "release_tag dikosongkan -> pakai release terbaru."
+            TAG="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')"
+          fi
+
           test -n "$TAG"
-          test -n "$ZIP"
+          echo "Release tag dipakai: $TAG"
+
+          gh release view "$TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
+
+          # Kosong = auto-detect asset .zip di release itu. Kalau cuma ada
+          # satu .zip, itu yang dipakai. Kalau nol atau lebih dari satu,
+          # berhenti dan minta diisi manual (biar gak salah tebak asset).
+          if [ -z "$ZIP" ]; then
+            echo "source_zip dikosongkan -> auto-detect asset .zip di release $TAG."
+
+            ALL_ASSETS="$(
+              gh release view "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json assets \
+                --jq '.assets[].name'
+            )"
+
+            ZIP_CANDIDATES=""
+            ZIP_COUNT=0
+            while IFS= read -r NAME; do
+              [ -z "$NAME" ] && continue
+              case "$NAME" in
+                *.[zZ][iI][pP])
+                  ZIP_CANDIDATES="${ZIP_CANDIDATES}${NAME}"$'\n'
+                  ZIP_COUNT=$((ZIP_COUNT + 1))
+                  ;;
+              esac
+            done <<< "$ALL_ASSETS"
+
+            if [ "$ZIP_COUNT" -eq 0 ]; then
+              echo "ERROR: Tidak ada asset .zip di release $TAG."
+              exit 1
+            fi
+
+            if [ "$ZIP_COUNT" -gt 1 ]; then
+              echo "ERROR: Ada lebih dari satu asset .zip di release $TAG, isi source_zip manual salah satu dari:"
+              printf '%s' "$ZIP_CANDIDATES"
+              exit 1
+            fi
+
+            ZIP="$(printf '%s' "$ZIP_CANDIDATES" | head -n 1)"
+          fi
+
+          echo "Asset ZIP dipakai: $ZIP"
+
+          gh release view "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' \
+            | grep -Fx "$ZIP"
 
           echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "source_zip=$ZIP" >> "$GITHUB_OUTPUT"
 
           echo "Using release tag: $TAG"
           echo "Using source asset: $ZIP"
-
-      - name: Verify source Release and asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.inputs.outputs.release_tag }}
-          SOURCE_ZIP: ${{ steps.inputs.outputs.source_zip }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          gh release view "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY"
-
-          gh release view "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name'
-
-          gh release view "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name' \
-            | grep -Fx "$SOURCE_ZIP"
 
       - name: Download source ZIP from Release
         env:
@@ -372,4 +407,3 @@ jobs:
           echo "APK: $FINAL_APK"
           echo "Size:"
           ls -lh "$FINAL_APK"
-          
