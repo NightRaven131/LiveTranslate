@@ -1,0 +1,173 @@
+\
+name: Build APK
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build"
+        required: true
+        type: string
+      title:
+        description: "Release title"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release-${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.9"
+
+      - name: Read release information
+        id: release
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          EVENT_TITLE: ${{ github.event.release.name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_TITLE: ${{ inputs.title }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          TAG="${EVENT_TAG:-${INPUT_TAG:-$REF_NAME}}"
+          TITLE="${EVENT_TITLE:-${INPUT_TITLE:-$TAG}}"
+
+          TAG="${TAG#refs/tags/}"
+          VERSION_NAME="${TAG#v}"
+
+          if [[ ! "$VERSION_NAME" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-.+)?$ ]]; then
+            echo "Invalid release tag: $TAG"
+            echo "Expected format: v1.2.1-priev, v1.2.2, v2.0.0"
+            exit 1
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          PRERELEASE="${BASH_REMATCH[4]}"
+
+          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+
+          if (( VERSION_CODE < 1 )); then
+            VERSION_CODE=1
+          fi
+
+          SAFE_TITLE="$(
+            printf '%s' "$TITLE" |
+            tr '[:upper:]' '[:lower:]' |
+            sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+          )"
+
+          [[ -n "$SAFE_TITLE" ]] || SAFE_TITLE="release"
+
+          APK_NAME="LiveTranslate-${TAG}-${SAFE_TITLE}.apk"
+
+          {
+            echo "tag=$TAG"
+            echo "title=$TITLE"
+            echo "version_name=$VERSION_NAME"
+            echo "version_code=$VERSION_CODE"
+            echo "apk_name=$APK_NAME"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Release"
+            echo
+            echo "- Tag: \`$TAG\`"
+            echo "- Title: $TITLE"
+            echo "- versionName: \`$VERSION_NAME\`"
+            echo "- versionCode: \`$VERSION_CODE\`"
+            echo "- APK: \`$APK_NAME\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build release APK
+        env:
+          VERSION_NAME: ${{ steps.release.outputs.version_name }}
+          VERSION_CODE: ${{ steps.release.outputs.version_code }}
+        run: |
+          set -euo pipefail
+
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            -PversionName="$VERSION_NAME" \
+            -PversionCode="$VERSION_CODE" \
+            :app:assembleRelease
+
+      - name: Rename APK
+        id: apk
+        env:
+          APK_NAME: ${{ steps.release.outputs.apk_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK_PATH="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+
+          if [[ -z "$APK_PATH" ]]; then
+            echo "No release APK was produced."
+            find app/build/outputs -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          FINAL_PATH="app/build/outputs/apk/release/$APK_NAME"
+          mv "$APK_PATH" "$FINAL_PATH"
+
+          echo "path=$FINAL_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Verify APK metadata
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ steps.release.outputs.version_name }}
+        run: |
+          set -euo pipefail
+
+          echo "Release tag : ${{ steps.release.outputs.tag }}"
+          echo "Title       : ${{ steps.release.outputs.title }}"
+          echo "Version     : $EXPECTED_VERSION"
+          echo "APK         : ${{ steps.apk.outputs.path }}"
+
+      - name: Upload APK to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$APK" --clobber
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveTranslate-${{ steps.release.outputs.tag }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
